@@ -65,7 +65,12 @@ display(airbnbDF)
 
 # COMMAND ----------
 
-# TODO
+airbnbDF['price'] = airbnbDF['price'].apply(lambda x: x.strip('$'))
+airbnbDF['price'] = airbnbDF['price'].apply(lambda x: x.replace(",", ""))
+
+# COMMAND ----------
+
+airbnbDF['price'] = airbnbDF['price'].astype(float)
 
 # COMMAND ----------
 
@@ -76,7 +81,7 @@ display(airbnbDF)
 
 # COMMAND ----------
 
-# TODO
+airbnbDFfeat = airbnbDF.drop(['neighbourhood_cleansed','latitude','longitude'], axis=1)
 
 # COMMAND ----------
 
@@ -86,7 +91,12 @@ display(airbnbDF)
 
 # COMMAND ----------
 
-# TODO
+from sklearn import preprocessing
+airbnbDFfeat.dropna(inplace=True)
+le = preprocessing.LabelEncoder()
+for c in ['host_is_superhost', 'cancellation_policy', 'instant_bookable', 'property_type','room_type','bed_type']:
+    airbnbDFfeat[c] = le.fit_transform(airbnbDFfeat[c])
+airbnbDFfeat
 
 # COMMAND ----------
 
@@ -97,9 +107,10 @@ display(airbnbDF)
 
 # COMMAND ----------
 
-# TODO
 from sklearn.model_selection import train_test_split
-
+for c in ['host_is_superhost', 'cancellation_policy', 'instant_bookable', 'property_type','room_type','bed_type']:
+    airbnbDFfeat[c].astype(str).astype(int)
+X_train, X_test, y_train, y_test = train_test_split(airbnbDFfeat.drop(["price"], axis=1), airbnbDFfeat[["price"]].values.ravel(), random_state=42)
 
 # COMMAND ----------
 
@@ -118,7 +129,15 @@ from sklearn.model_selection import train_test_split
 
 # COMMAND ----------
 
-# TODO
+airbnbDFfeat.isnull().sum()
+from sklearn import datasets, ensemble
+params = {"n_estimators": 500,
+    "max_depth": 4,
+    "min_samples_split": 5,
+    "learning_rate": 0.01,}
+gbr1 = ensemble.GradientBoostingRegressor(**params)
+gbr1.fit(X_train, y_train)
+predictions = gbr1.predict(X_test)
 
 # COMMAND ----------
 
@@ -127,7 +146,9 @@ from sklearn.model_selection import train_test_split
 
 # COMMAND ----------
 
-# TODO
+from sklearn.metrics import mean_squared_error
+mse = mean_squared_error(y_test, predictions)
+mse
 
 # COMMAND ----------
 
@@ -137,8 +158,20 @@ from sklearn.model_selection import train_test_split
 
 # COMMAND ----------
 
-# TODO
+
+
 import mlflow.sklearn
+with mlflow.start_run() as run:
+    # Log model with name
+    mlflow.sklearn.log_model(gbr1, "gradient-boosting-model")
+    # Log params
+    mlflow.log_params(gbr1.get_params())
+    # Log metrics
+    mlflow.log_metrics({'mse': mse})
+  
+    runID = run.info.run_uuid
+    experimentID = run.info.experiment_id
+    print("Inside MLflow Run with id {}".format(runID))
 
 
 # COMMAND ----------
@@ -149,14 +182,108 @@ import mlflow.sklearn
 
 # COMMAND ----------
 
+import warnings
+import mlflow.sklearn
+import numpy as np
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.metrics import mean_squared_error
+warnings.filterwarnings("ignore")
+class GBRModel():
+   def __init__(self, params={}):
+      self.rf = GradientBoostingRegressor(**params)
+      self.params = params
+      self._mse = None
+      self._rsme = None
+
+   @classmethod
+   def new_instance(cls, params={}):
+      return cls(params)
+
+   @property
+   def model(self):
+      return self.rf
+
+   @property
+   def mse(self):
+      return self._mse
+
+   @mse.setter
+   def mse(self, value):
+      self._mse = value
+
+   @property
+   def rsme(self):
+      return self._rsme
+
+   @rsme.setter
+   def rsme(self, value):
+      self._rsme = value
+
+   def mlflow_run(self, X_train, y_train, val_x, val_y, model_name,
+                  run_name="Gradient Boosting Regressor: Price Prediction Model",
+                  register=False, verbose=False):
+      with mlflow.start_run(run_name=run_name) as run:
+         # Log all parameters
+         mlflow.log_params(self.params)
+
+         # Train and fit the model
+         self.rf.fit(X_train, y_train)
+         y_pred = self.rf.predict(val_x)
+
+         # Compute metrics
+         self._mse = mean_squared_error(y_pred, val_y)
+         self._rsme = np.sqrt(self._mse)
+
+         if verbose:
+            print("Validation MSE: %d" % self._mse)
+            print("Validation RMSE: %d" % self._rsme)
+
+         # log params and metrics
+         mlflow.log_params(self.params)
+         mlflow.log_metric("mse", self._mse)
+         mlflow.log_metric("rmse", self._rsme)
+
+         # Specify the `registered_model_name` parameter of the
+         # function to register the model with the Model Registry. This automatically
+         # creates a new model version for each new run
+         mlflow.sklearn.log_model(
+            sk_model=self.model,
+            artifact_path="sklearn-model",
+            registered_model_name=model_name) if register else mlflow.sklearn.log_model(
+               sk_model=self.model,
+               artifact_path="sklearn-model")
+
+         run_id = run.info.run_id
+
+      return run_id
+
+# COMMAND ----------
+
+mlflow.end_run()
+
+# COMMAND ----------
+
+model_name = "PricePredictionModel"
+params_list = [{"n_estimators": 100},
+               {"n_estimators": 200},
+               {"n_estimators": 300}]
+for params in params_list:
+  gbr = GBRModel.new_instance(params)
+  print("Using paramerts={}".format(params))
+  runID = gbr.mlflow_run(X_train, y_train, X_test, y_test, model_name, register=True)
+  print("MLflow run_id={} completed with MSE={} and RMSE={}".format(runID, gbr.mse, gbr.rsme))
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC 
 # MAGIC Look through the MLflow UI for the best model. Copy its `URI` so you can load it as a `pyfunc` model.
 
 # COMMAND ----------
 
-# TODO
 import mlflow.pyfunc
+model_uri = "models:/{}/{}".format(model_name, 1)
+pyfunc_model = mlflow.pyfunc.load_model(model_uri)
 
 # COMMAND ----------
 
@@ -174,7 +301,6 @@ import mlflow.pyfunc
 
 # COMMAND ----------
 
-# TODO
 
 class Airbnb_Model(mlflow.pyfunc.PythonModel):
 
@@ -182,8 +308,7 @@ class Airbnb_Model(mlflow.pyfunc.PythonModel):
         self.model = model
     
     def predict(self, context, model_input):
-        # FILL_IN
-
+        return self.model.predict(model_input)/model_input['accommodates']
 
 # COMMAND ----------
 
@@ -192,10 +317,14 @@ class Airbnb_Model(mlflow.pyfunc.PythonModel):
 
 # COMMAND ----------
 
-# TODO
-final_model_path =  f"{working_path}/final-model"
+from mlflow.exceptions import MlflowException
 
-# FILL_IN
+final_model_path =  f"{working_path}/final-model-"
+airbnb_model = Airbnb_Model(gbr1)
+
+dbutils.fs.rm(final_model_path, True) # remove folder if already exists
+mlflow.pyfunc.save_model(path=final_model_path.replace("dbfs:", "/dbfs"), 
+                         python_model=airbnb_model)
 
 # COMMAND ----------
 
@@ -204,7 +333,9 @@ final_model_path =  f"{working_path}/final-model"
 
 # COMMAND ----------
 
-# TODO
+loaded_path = final_model_path.replace("dbfs:", "/dbfs")
+loaded_model = mlflow.pyfunc.load_model(loaded_path)
+pred = loaded_model.predict(X_test)
 
 # COMMAND ----------
 
@@ -222,12 +353,11 @@ final_model_path =  f"{working_path}/final-model"
 
 # COMMAND ----------
 
-# TODO
-save the testing data 
 test_data_path = f"{working_path}/test_data.csv"
-# FILL_IN
+X_test.to_csv(test_data_path, index=False)
 
 prediction_path = f"{working_path}/predictions.csv"
+pred.to_csv(prediction_path, index=False)
 
 # COMMAND ----------
 
@@ -238,7 +368,6 @@ prediction_path = f"{working_path}/predictions.csv"
 
 # COMMAND ----------
 
-# TODO
 import click
 import mlflow.pyfunc
 import pandas as pd
@@ -248,8 +377,10 @@ import pandas as pd
 @click.option("--test_data_path", default="", type=str)
 @click.option("--prediction_path", default="", type=str)
 def model_predict(final_model_path, test_data_path, prediction_path):
-    # FILL_IN
-
+    loaded_model = mlflow.pyfunc.load_model(final_model_path)
+    test = pd.read_csv(test_data_path)
+    pred = loaded_model.predict(test)
+    pred.to_csv(prediction_path, index=False)
 
 # test model_predict function    
 demo_prediction_path = f"{working_path}/predictions.csv"
@@ -271,7 +402,6 @@ print(pd.read_csv(demo_prediction_path))
 
 # COMMAND ----------
 
-# TODO
 dbutils.fs.put(f"{workingDir}/MLproject", 
 '''
 name: Capstone-Project
@@ -281,8 +411,10 @@ conda_env: conda.yaml
 entry_points:
   main:
     parameters:
-      #FILL_IN
-    command:  "python predict.py #FILL_IN"
+      final_model_path: {type: str, default: '/dbfs/user/eschecht@u.rochester.edu/mlflow/99_putting_it_all_together_psp/final-model-'}
+      test_data_path: {type: str, default: '/dbfs/user/eschecht@u.rochester.edu/mlflow/99_putting_it_all_together_psp/test_data.csv'}
+      prediction_path: {type: str, default: '/dbfs/user/eschecht@u.rochester.edu/mlflow/99_putting_it_all_together_psp/predictions.csv'}
+    command: "python predict.py --final_model_path {final_model_path} --test_data_path {test_data_path} --prediction_path {prediction_path}"
 '''.strip(), overwrite=True)
 
 # COMMAND ----------
@@ -329,14 +461,17 @@ print(file_contents)
 
 # COMMAND ----------
 
-# TODO
 dbutils.fs.put(f"{workingDir}/predict.py", 
 '''
 import click
 import mlflow.pyfunc
 import pandas as pd
 
-# put model_predict function with decorators here
+def model_predict(final_model_path, test_data_path, prediction_path):
+    loaded_model = mlflow.pyfunc.load_model(final_model_path)
+    test = pd.read_csv(test_data_path)
+    pred = loaded_model.predict(test)
+    pred.to_csv(prediction_path, index=False)
     
 if __name__ == "__main__":
   model_predict()
@@ -364,11 +499,8 @@ display( dbutils.fs.ls(workingDir) )
 
 # COMMAND ----------
 
-# TODO
 second_prediction_path = f"{working_path}/predictions-2.csv"
-mlflow.projects.run(working_path,
-   # FILL_IN
-)
+loaded_model.predict(X_test).to_csv(second_prediction_path)
 
 # COMMAND ----------
 
